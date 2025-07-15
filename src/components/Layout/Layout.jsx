@@ -1,7 +1,7 @@
 import React from 'react'
 import Header from '../Header/Header'
 import Footer from '../Footer/Footer'
-import Routers from '../routers/Routers'
+import Routers from '../Routers/Routers'
 import { BrowserRouter as Router, useLocation } from 'react-router-dom'
 
 function LayoutContent() {
