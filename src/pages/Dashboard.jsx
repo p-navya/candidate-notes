@@ -197,7 +197,7 @@ function Dashboard() {
         </div>
       </main>
       {/* Custom scrollbar for notifications */}
-      <style jsx>{`
+      <style>{`
         .custom-scrollbar::-webkit-scrollbar {
           width: 8px;
           background: #e0e7ef;

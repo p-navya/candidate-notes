@@ -51,6 +51,17 @@ function CandidateNotes() {
   const [activeReactionId, setActiveReactionId] = useState(null);
   const chatAreaRef = useRef(null);
   const [showSearch, setShowSearch] = useState(false);
+  // Add a new state for attachment file name
+  const [attachmentName, setAttachmentName] = useState("");
+  const [candidates, setCandidates] = useState([]);
+
+  // Fetch all candidates for forward dropdown
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "candidates"), (snapshot) => {
+      setCandidates(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+    return () => unsub();
+  }, []);
 
   useEffect(() => {
     // Fetch candidate info
@@ -246,9 +257,10 @@ function CandidateNotes() {
     }
   };
 
+  // Update handleSend to store file name in Firestore
   const handleSend = async (e) => {
     e.preventDefault();
-    if (!newMessage.trim()) return;
+    if (!newMessage.trim() && !attachmentUrl) return;
     // Detect @username tags
     const tagRegex = /@([\w.@-]+)/g;
     const tags = [];
@@ -258,13 +270,14 @@ function CandidateNotes() {
       const user = users.find(u => (u.displayName || u.email) === tag);
       if (user) tags.push(user);
     }
-    // Add the note
+    // Add the note (store base64 attachment and name if present)
     const noteRef = await addDoc(collection(db, "candidates", candidateId, "notes"), {
       text: newMessage,
       createdAt: serverTimestamp(),
       userId: currentUser ? currentUser.uid : null,
       replyTo: replyTo ? replyTo.id : null,
-      attachment: attachmentUrl,
+      attachment: attachmentUrl || "",
+      attachmentName: attachmentName || "",
     });
     // Create notifications for tagged users
     for (const user of tags) {
@@ -280,6 +293,7 @@ function CandidateNotes() {
     setNewMessage("");
     setReplyTo(null);
     setAttachmentUrl("");
+    setAttachmentName("");
   };
 
   // Add or remove a reaction for a message
@@ -316,10 +330,16 @@ function CandidateNotes() {
   // Star/unstar message
   const handleStar = async (msg) => {
     const userStarRef = doc(db, 'candidates', candidateId, 'notes', msg.id, 'stars', currentUser.uid);
-    if (starredIds.includes(msg.id)) {
-      await deleteDoc(userStarRef);
-    } else {
-      await setDoc(userStarRef, { uid: currentUser.uid });
+    try {
+      if (starredIds.includes(msg.id)) {
+        await deleteDoc(userStarRef);
+        toast('Message unstarred');
+      } else {
+        await setDoc(userStarRef, { uid: currentUser.uid });
+        toast('Message starred');
+      }
+    } catch (err) {
+      toast('Error updating star: ' + err.message);
     }
   };
   // Listen for starred messages
@@ -352,16 +372,16 @@ function CandidateNotes() {
     });
     closeForward();
   };
-  // Handle attachment upload
+  // Handle attachment upload (store as base64 in Firestore)
   const handleAttachment = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    // setAttachment(file); // Removed attachment state
-    const storage = getStorage();
-    const fileRef = ref(storage, `attachments/${candidateId}/${Date.now()}_${file.name}`);
-    await uploadBytes(fileRef, file);
-    const url = await getDownloadURL(fileRef);
-    setAttachmentUrl(url);
+    setAttachmentName(file.name);
+    const reader = new FileReader();
+    reader.onload = () => {
+      setAttachmentUrl(reader.result); // base64 data URL
+    };
+    reader.readAsDataURL(file);
   };
 
   // Open thread modal
@@ -405,6 +425,9 @@ function CandidateNotes() {
       document.removeEventListener('click', handleDocumentClick);
     };
   }, []);
+
+  const pinnedMessages = messages.filter(msg => msg.pinned);
+  // const unpinnedMessages = messages.filter(msg => !msg.pinned); // Removed unpinnedMessages state
 
   return (
     <div className="max-w-2xl mx-auto py-4 sm:py-8 px-1 sm:px-0">
@@ -481,115 +504,167 @@ function CandidateNotes() {
             ) : messages.length === 0 ? (
               <div className="text-gray-400 text-center">No notes yet.</div>
             ) : (
-              messages
-                .filter(msg => !search || msg.text.toLowerCase().includes(search.toLowerCase()))
-                .map(msg => {
-                  const isSelf = msg.userId === (currentUser && currentUser.uid);
-                  const sender = users.find(u => u.uid === msg.userId);
-                  const isReply = !!msg.replyTo;
-                  const repliedMsg = isReply ? messages.find(m => m.id === msg.replyTo) : null;
-                  const highlight = search && msg.text.toLowerCase().includes(search.toLowerCase());
-                  return (
-                    <div
-                      key={msg.id}
-                      ref={el => (messageRefs.current[msg.id] = el)}
-                      className={`mb-3 flex ${isSelf ? 'justify-end' : 'justify-start'}`}
-                      onDoubleClick={() => setActiveReactionId(activeReactionId === msg.id ? null : msg.id)}
-                      onClick={e => e.stopPropagation()}
-                    >
-                      {!isSelf && (
-                        <div className="flex flex-col items-center mr-2">
-                          {renderAvatar(sender)}
-                        </div>
-                      )}
-                      <div className={`px-4 py-2 rounded-lg max-w-[75%] shadow relative group ${highlightedId === msg.id ? 'ring-2 ring-blue-400 bg-[#36393f]' : ''} ${isSelf ? 'bg-blue-600 text-white' : 'bg-[#36393f] text-gray-100'} ${highlight ? 'ring-2 ring-yellow-400' : ''}`}
+              <>
+                {pinnedMessages.length > 0 && (
+                  <div className="flex flex-col gap-1 mb-2">
+                    {pinnedMessages.map(msg => (
+                      <div
+                        key={msg.id}
+                        className="flex items-center self-start max-w-xs bg-yellow-50 border border-yellow-300 rounded-lg px-3 py-1 shadow-sm"
+                        style={{ marginLeft: 8 }}
                       >
-                        <div className="flex items-center justify-between mb-1">
-                          <div className="text-xs font-semibold text-blue-300">
-                            {sender?.displayName || sender?.email || 'Unknown'}
-                          </div>
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button variant="ghost" size="icon" className="w-6 h-6 p-0 text-gray-400 hover:text-blue-500"><MoreVertical className="w-4 h-4" /></Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end" className="z-50">
-                              <DropdownMenuItem onClick={() => handleReply(msg)}>Reply</DropdownMenuItem>
-                              {isSelf && <DropdownMenuItem onClick={() => handleEdit(msg)}>Edit</DropdownMenuItem>}
-                              {isSelf && <DropdownMenuItem onClick={() => handleDelete(msg)}>Delete</DropdownMenuItem>}
-                              <DropdownMenuItem onClick={() => handlePin(msg)}>{msg.pinned ? 'Unpin' : 'Pin'}</DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => handleStar(msg)}>{starredIds.includes(msg.id) ? 'Unstar' : 'Star'}</DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => handleForward(msg)}>Forward</DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => openThread(msg)}>View Thread</DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                        </div>
-                        {isReply && repliedMsg && (
-                          <div className="mb-1 pl-2 border-l-4 border-blue-400 bg-[#23272a] text-xs text-blue-200 py-1">
-                            Replying to <span className="font-semibold">{users.find(u => u.uid === repliedMsg.userId)?.displayName || 'Unknown'}</span>: {repliedMsg.text}
+                        <span className="mr-2 text-yellow-600 text-lg">📌</span>
+                        <span className="text-sm text-gray-900 break-words flex-1">{msg.text}</span>
+                        <button
+                          className="ml-2 text-xs text-yellow-700 hover:underline hover:text-yellow-900"
+                          onClick={() => handlePin(msg)}
+                          title="Unpin"
+                        >
+                          Unpin
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {messages
+                  .filter(msg => !search || msg.text.toLowerCase().includes(search.toLowerCase()))
+                  .map(msg => {
+                    const isSelf = msg.userId === (currentUser && currentUser.uid);
+                    const sender = users.find(u => u.uid === msg.userId);
+                    const isReply = !!msg.replyTo;
+                    const repliedMsg = isReply ? messages.find(m => m.id === msg.replyTo) : null;
+                    const highlight = search && msg.text.toLowerCase().includes(search.toLowerCase());
+                    return (
+                      <div
+                        key={msg.id}
+                        ref={el => (messageRefs.current[msg.id] = el)}
+                        className={`mb-3 flex ${isSelf ? 'justify-end' : 'justify-start'}`}
+                        onDoubleClick={() => setActiveReactionId(activeReactionId === msg.id ? null : msg.id)}
+                        onClick={e => e.stopPropagation()}
+                      >
+                        {!isSelf && (
+                          <div className="flex flex-col items-center mr-2">
+                            {renderAvatar(sender)}
                           </div>
                         )}
-                        {editingId === msg.id ? (
-                          <div className="flex gap-2 items-center">
-                            <input
-                              className="flex-1 px-2 py-1 rounded bg-[#23272a] text-gray-100 border border-gray-600"
-                              value={editingText}
-                              onChange={e => setEditingText(e.target.value)}
-                              autoFocus
-                            />
-                            <Button size="sm" className="px-2 py-1" onClick={() => handleEditSave(msg)} type="button">Save</Button>
-                            <Button size="sm" className="px-2 py-1 !text-black" variant="outline" onClick={handleEditCancel} type="button">Cancel</Button>
+                        <div className={`px-4 py-2 rounded-lg max-w-[75%] shadow relative group ${highlightedId === msg.id ? 'ring-2 ring-blue-400 bg-[#36393f]' : ''} ${isSelf ? 'bg-blue-600 text-white' : 'bg-[#36393f] text-gray-100'} ${highlight ? 'ring-2 ring-yellow-400' : ''}`}
+                        >
+                          <div className="flex items-center justify-between mb-1">
+                            <div className="text-xs font-semibold text-blue-300">
+                              {sender?.displayName || sender?.email || 'Unknown'}
+                            </div>
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button variant="ghost" size="icon" className="w-6 h-6 p-0 text-gray-400 hover:text-blue-500"><MoreVertical className="w-4 h-4" /></Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end" className="z-50">
+                                <DropdownMenuItem onClick={() => handleReply(msg)}>Reply</DropdownMenuItem>
+                                {isSelf && <DropdownMenuItem onClick={() => handleEdit(msg)}>Edit</DropdownMenuItem>}
+                                {isSelf && <DropdownMenuItem onClick={() => handleDelete(msg)}>Delete</DropdownMenuItem>}
+                                <DropdownMenuItem onClick={() => handlePin(msg)}>{msg.pinned ? 'Unpin' : 'Pin'}</DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => handleStar(msg)}>{starredIds.includes(msg.id) ? 'Unstar' : 'Star'}</DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => handleForward(msg)}>Forward</DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => openThread(msg)}>View Thread</DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
                           </div>
-                        ) : (
-                          <>
-                            <div className="flex justify-between items-end">
-                              <span className="break-words">{msg.text}</span>
-                              <span className="ml-2 text-xs text-gray-400 whitespace-nowrap">
-                                {msg.createdAt && msg.createdAt.seconds ?
-                                  format(new Date(msg.createdAt.seconds * 1000), 'p') :
-                                  ''}
-                              </span>
+                          {isReply && repliedMsg && (
+                            <div className="mb-1 pl-2 border-l-4 border-blue-400 bg-[#23272a] text-xs text-blue-200 py-1">
+                              Replying to <span className="font-semibold">{users.find(u => u.uid === repliedMsg.userId)?.displayName || 'Unknown'}</span>: {repliedMsg.text}
                             </div>
-                            <div className="flex gap-2 mt-2">
-                              {msg.attachment && (
-                                <a href={msg.attachment} target="_blank" rel="noopener noreferrer" className="block">
-                                  <img src={msg.attachment} alt="attachment" className="max-h-32 rounded border mt-1" />
-                                </a>
-                              )}
-                              {activeReactionId === msg.id && (
-                                <div onClick={e => e.stopPropagation()} className="flex gap-2">
-                                  {EMOJIS.map(emoji => {
-                                    const count = msg.reactions && msg.reactions[emoji] ? msg.reactions[emoji].length : 0;
-                                    const reacted = msg.reactions && msg.reactions[emoji] && currentUser && msg.reactions[emoji].includes(currentUser.uid);
+                          )}
+                          {editingId === msg.id ? (
+                            <div className="flex gap-2 items-center">
+                              <input
+                                className="flex-1 px-2 py-1 rounded bg-[#23272a] text-gray-100 border border-gray-600"
+                                value={editingText}
+                                onChange={e => setEditingText(e.target.value)}
+                                autoFocus
+                              />
+                              <Button size="sm" className="px-2 py-1" onClick={() => handleEditSave(msg)} type="button">Save</Button>
+                              <Button size="sm" className="px-2 py-1 !text-black" variant="outline" onClick={handleEditCancel} type="button">Cancel</Button>
+                            </div>
+                          ) : (
+                            <>
+                              <div className="flex justify-between items-end">
+                                <span className="break-words">{msg.text}</span>
+                                <span className="ml-2 text-xs text-gray-400 whitespace-nowrap">
+                                  {msg.createdAt && msg.createdAt.seconds ?
+                                    format(new Date(msg.createdAt.seconds * 1000), 'p') :
+                                    ''}
+                                </span>
+                              </div>
+                              <div className="flex gap-2 mt-2">
+                                {msg.attachment && msg.attachment.startsWith('data:') && (() => {
+                                  const mime = msg.attachment.split(';')[0].split(':')[1];
+                                  if (mime && mime.startsWith('image/')) {
                                     return (
-                                      <button
-                                        key={emoji}
-                                        type="button"
-                                        className={`flex items-center px-2 py-1 rounded-full text-sm transition border border-transparent ${reacted ? 'bg-blue-700 text-white border-blue-400' : 'bg-[#2c2f33] text-gray-200 hover:bg-blue-800'}`}
-                                        onClick={() => handleReaction(msg.id, emoji)}
-                                      >
-                                        <span>{emoji}</span>
-                                        {count > 0 && <span className="ml-1 text-xs">{count}</span>}
-                                      </button>
+                                      <a href={msg.attachment} target="_blank" rel="noopener noreferrer" className="block">
+                                        <img src={msg.attachment} alt={msg.attachmentName || 'attachment'} className="max-h-32 rounded border mt-1" />
+                                      </a>
                                     );
-                                  })}
-                                </div>
-                              )}
-                            </div>
-                          </>
+                                  } else {
+                                    const fileName = msg.attachmentName || 'attachment';
+                                    return (
+                                      <a href={msg.attachment} download={fileName} target="_blank" rel="noopener noreferrer" className="block mt-1 text-xs text-white underline bg-blue-900 px-2 py-1 rounded">
+                                        <span role="img" aria-label="file" className="mr-1">📄</span>
+                                        {fileName}
+                                      </a>
+                                    );
+                                  }
+                                })()}
+                                {activeReactionId === msg.id && (
+                                  <div onClick={e => e.stopPropagation()} className="flex gap-2">
+                                    {EMOJIS.map(emoji => {
+                                      const count = msg.reactions && msg.reactions[emoji] ? msg.reactions[emoji].length : 0;
+                                      const reacted = msg.reactions && msg.reactions[emoji] && currentUser && msg.reactions[emoji].includes(currentUser.uid);
+                                      return (
+                                        <button
+                                          key={emoji}
+                                          type="button"
+                                          className={`flex items-center px-2 py-1 rounded-full text-sm transition border border-transparent ${reacted ? 'bg-blue-700 text-white border-blue-400' : 'bg-[#2c2f33] text-gray-200 hover:bg-blue-800'}`}
+                                          onClick={() => handleReaction(msg.id, emoji)}
+                                        >
+                                          <span>{emoji}</span>
+                                          {count > 0 && <span className="ml-1 text-xs">{count}</span>}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                                {msg.pinned && <span className="mr-1 text-yellow-600" title="Pinned">📌</span>}
+                                {starredIds.includes(msg.id) && <span className="ml-1 text-yellow-500" title="Starred">★</span>}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                        {isSelf && (
+                          <div className="flex flex-col items-center ml-2">
+                            {renderAvatar(sender)}
+                          </div>
                         )}
                       </div>
-                      {isSelf && (
-                        <div className="flex flex-col items-center ml-2">
-                          {renderAvatar(sender)}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })
+                    );
+                  })}
+              </>
             )}
             <div ref={messagesEndRef} />
           </div>
           {/* Message input, fixed to bottom of chat area */}
+          {replyTo && (
+            <div className="flex items-center bg-blue-50 border-l-4 border-blue-400 px-3 py-2 mb-1 rounded relative max-w-md">
+              <span className="font-semibold text-blue-700 mr-2">Replying to {replyTo.sender}:</span>
+              <span className="text-gray-800 flex-1 break-words">{replyTo.text}</span>
+              <button
+                className="ml-2 text-xs text-blue-700 hover:underline"
+                onClick={() => setReplyTo(null)}
+                title="Cancel reply"
+                type="button"
+              >
+                ✕
+              </button>
+            </div>
+          )}
           <form
             onSubmit={e => { e.preventDefault(); handleSend(e); }}
             className="flex gap-1 sm:gap-2 relative bg-[#2c2f33] p-2 sm:p-3 rounded-lg border border-[#23272a]"
@@ -610,16 +685,21 @@ function CandidateNotes() {
             </label>
             <Button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-base">Send</Button>
             {showAutocomplete && (
-              <div className="absolute left-0 top-full mt-1 w-48 sm:w-64 bg-[#23272a] border border-[#36393f] rounded shadow z-10">
-                {autocompleteOptions.map((user, idx) => (
-                  <div
-                    key={user.uid}
-                    className={`px-3 py-2 cursor-pointer ${idx === autocompleteIndex ? "bg-blue-700 text-white" : "text-gray-100"}`}
-                    onMouseDown={() => handleAutocompleteSelect(user)}
-                  >
-                    {user.displayName || user.email}
-                  </div>
-                ))}
+              <div className="absolute left-0 bottom-full mb-1 w-40 bg-[#23272a] border border-[#36393f] rounded shadow z-20 overflow-hidden">
+                {autocompleteOptions.length === 0 ? (
+                  <div className="px-2 py-1 text-xs text-gray-400">No users found</div>
+                ) : (
+                  autocompleteOptions.map((user, idx) => (
+                    <div
+                      key={user.uid}
+                      className={`px-2 py-1 text-xs cursor-pointer transition-colors duration-100 ${idx === autocompleteIndex ? "bg-blue-700 text-white" : "text-gray-100 hover:bg-[#36393f]"}`}
+                      onMouseDown={() => handleAutocompleteSelect(user)}
+                      onMouseEnter={() => setAutocompleteIndex(idx)}
+                    >
+                      {user.displayName || user.email}
+                    </div>
+                  ))
+                )}
               </div>
             )}
           </form>
@@ -662,13 +742,19 @@ function CandidateNotes() {
         <div className={`fixed inset-0 z-50 flex items-center justify-center bg-black/40 ${forwardModal.open ? '' : 'hidden'}`}>
           <div className="bg-[#23272a] rounded-lg shadow-lg p-6 w-full max-w-md">
             <div className="mb-4 text-white">Forward message to candidate:</div>
-            <select value={forwardCandidate} onChange={e => setForwardCandidate(e.target.value)} className="w-full mb-4 p-2 rounded bg-[#36393f] text-white">
+            <select
+              value={forwardCandidate}
+              onChange={e => setForwardCandidate(e.target.value)}
+              className="w-full mb-4 p-2 rounded bg-[#36393f] text-white"
+            >
               <option value="">Select candidate</option>
-              {/* Assuming 'candidates' collection exists and contains candidate data */}
-              {/* This part needs to be adjusted based on your actual candidate data structure */}
-              {/* For now, it's a placeholder to show the structure */}
-              {/* <option value="candidateId1">Candidate 1</option> */}
-              {/* <option value="candidateId2">Candidate 2</option> */}
+              {candidates
+                .filter(c => c.id !== candidateId)
+                .map(c => (
+                  <option key={c.id} value={c.id}>
+                    {c.name || c.email || c.id}
+                  </option>
+                ))}
             </select>
             <Button onClick={handleForwardSend} className="bg-blue-600 hover:bg-blue-700 text-white w-full">Forward</Button>
             <Button onClick={closeForward} variant="outline" className="w-full mt-2">Cancel</Button>
